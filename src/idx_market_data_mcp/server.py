@@ -8,13 +8,16 @@ from typing import Any, Dict, List, Optional
 
 from fastmcp import FastMCP
 import httpx
-import numpy as np
-import pandas as pd
-from scipy.signal import argrelextrema
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import mplfinance as mpf
+
+# ponytail: lazy-import heavy deps (~80 MB); eager when tool count grows past 20
+def _lazy_imports():
+    import numpy as np
+    import pandas as pd
+    from scipy.signal import argrelextrema
+    import matplotlib
+    matplotlib.use("Agg")
+    import mplfinance as mpf
+    return np, pd, argrelextrema, mpf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("idx-market-data-mcp")
@@ -30,13 +33,13 @@ USD_REPORTING_EMITEN = {
 SCRATCH_DIR = os.environ.get("IDX_MCP_CACHE_DIR", tempfile.gettempdir())
 os.makedirs(SCRATCH_DIR, exist_ok=True)
 STOCKBIT_TOKEN_FILE = os.path.expanduser("~/.config/stockbit/token")
-HERMES_TOKEN_FILE = os.path.expanduser("~/.hermes/stockbit_token")
+AGENT_TOKEN_FILE = os.path.expanduser("~/.agent/stockbit_token")
 
 
 def _get_stockbit_headers() -> Optional[Dict[str, str]]:
     token = os.environ.get("STOCKBIT_BEARER_TOKEN", "").strip()
     if not token:
-        for path in (STOCKBIT_TOKEN_FILE, HERMES_TOKEN_FILE):
+        for path in (AGENT_TOKEN_FILE, STOCKBIT_TOKEN_FILE):
             if os.path.exists(path):
                 try:
                     with open(path, "r") as f:
@@ -129,6 +132,7 @@ async def idx_analyze_chart_pattern(
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     try:
+        np, pd, argrelextrema, mpf = _lazy_imports()
         async with httpx.AsyncClient(timeout=12.0, headers=headers) as client:
             res = await client.get(url)
             if res.status_code != 200:
@@ -429,7 +433,7 @@ async def idx_get_orderbook(ticker: str) -> Dict[str, Any]:
     clean_ticker = ticker.strip().upper().replace(".JK", "")
     headers = _get_stockbit_headers()
     if not headers:
-        return {"status": "error", "error": "Stockbit token not configured in ~/.hermes/stockbit_token"}
+        return {"status": "error", "error": "Stockbit token missing or expired (~/.agent/stockbit_token); re-login to Stockbit to renew"}
 
     url = f"https://exodus.stockbit.com/company-price-feed/v2/orderbook/companies/{clean_ticker}"
     try:
@@ -476,7 +480,7 @@ async def idx_get_bandarmology(ticker: str) -> Dict[str, Any]:
     clean_ticker = ticker.strip().upper().replace(".JK", "")
     headers = _get_stockbit_headers()
     if not headers:
-        return {"status": "error", "error": "Stockbit token not configured in ~/.hermes/stockbit_token"}
+        return {"status": "error", "error": "Stockbit token missing or expired (~/.agent/stockbit_token); re-login to Stockbit to renew"}
 
     url = f"https://exodus.stockbit.com/marketdetectors/{clean_ticker}"
     try:
@@ -521,7 +525,7 @@ async def idx_get_keystats(ticker: str) -> Dict[str, Any]:
     clean_ticker = ticker.strip().upper().replace(".JK", "")
     headers = _get_stockbit_headers()
     if not headers:
-        return {"status": "error", "error": "Stockbit token not configured in ~/.hermes/stockbit_token"}
+        return {"status": "error", "error": "Stockbit token missing or expired (~/.agent/stockbit_token); re-login to Stockbit to renew"}
 
     url = f"https://exodus.stockbit.com/keystats/{clean_ticker}"
     try:
@@ -577,7 +581,7 @@ async def idx_get_dividends(ticker: str) -> Dict[str, Any]:
     clean_ticker = ticker.strip().upper().replace(".JK", "")
     headers = _get_stockbit_headers()
     if not headers:
-        return {"status": "error", "error": "Stockbit token not configured in ~/.hermes/stockbit_token"}
+        return {"status": "error", "error": "Stockbit token missing or expired (~/.agent/stockbit_token); re-login to Stockbit to renew"}
 
     url = f"https://exodus.stockbit.com/corpaction/dividend?symbol={clean_ticker}"
     try:
@@ -616,7 +620,7 @@ async def idx_get_insider_activity(ticker: str, limit: int = 10) -> Dict[str, An
     clean_ticker = ticker.strip().upper().replace(".JK", "")
     headers = _get_stockbit_headers()
     if not headers:
-        return {"status": "error", "error": "Stockbit token not configured in ~/.hermes/stockbit_token"}
+        return {"status": "error", "error": "Stockbit token missing or expired (~/.agent/stockbit_token); re-login to Stockbit to renew"}
 
     url = f"https://exodus.stockbit.com/insider/company/majorholder?symbol={clean_ticker}&limit={limit}"
     try:
@@ -673,4 +677,14 @@ async def idx_stockbit(action: str, ticker: str) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import argparse
+    parser = argparse.ArgumentParser(description="IDX Market Data FastMCP Server")
+    parser.add_argument("--transport", choices=["stdio", "sse"], default="stdio", help="Transport mode")
+    parser.add_argument("--port", type=int, default=8772, help="Port for SSE mode")
+    parser.add_argument("--host", default="127.0.0.1", help="Host for SSE mode")
+    args = parser.parse_args()
+
+    if args.transport == "sse":
+        mcp.run(transport="sse", port=args.port, host=args.host)
+    else:
+        mcp.run(transport="stdio")
